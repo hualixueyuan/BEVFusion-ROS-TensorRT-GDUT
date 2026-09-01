@@ -1,0 +1,25 @@
+# Catkin and CMake build products
+build/
+devel/
+install/
+logs/
+log/
+.catkin_tools/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local datasets and ROS recordings
+*.bag
+
+# Large model artifacts are kept outside normal Git history.
+model/*.pth
+model/det/
+model/seg/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+*~

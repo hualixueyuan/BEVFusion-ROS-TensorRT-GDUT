@@ -2,6 +2,7 @@
 #define bevfusion_plugin_h
 
 #include <iostream>
+#include <array>
 #include <string.h>
 #include <vector>
 #include <cuda_runtime.h>
@@ -62,7 +63,8 @@ void visualize(const std::vector<bevfusion::head::transbbox::BoundingBox>& bboxe
                       const std::vector<unsigned char*> images, const nv::Tensor& lidar2image, const std::string& save_path,
                       cudaStream_t stream);
 
-std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std::string& precision);
+std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std::string& precision,
+                                            float det_confidence_threshold);
 
 
 class BEVFusionNode
@@ -93,14 +95,23 @@ class BEVFusionNode
 
 	std::shared_ptr<bevfusion::Core> core;
 	cudaStream_t stream;
+	bool seg_mode_ = false;
+	std::array<float, 6> seg_thresholds_;
+	cv::Mat last_seg_image_;
 	
  public:
-	BEVFusionNode(const std::string& model, const std::string& precision);
+	BEVFusionNode(const std::string& model, const std::string& precision,
+	              float det_confidence_threshold,
+	              const std::array<float, 6>& seg_thresholds,
+	              const std::string& calib_config_path = "");
 	~BEVFusionNode();
 	
 	// 推理
 	// void Inference(const std::vector<unsigned char *>& images_data, const pcl::PointCloud<PointT>::Ptr &cloud);
 	void Inference(const std::vector<unsigned char *>& images_data, float *lidar_arr, int lidar_num);
+	bool getLastSegImage(cv::Mat& image) const;
+		void setSegThresholds(float drivable_threshold, float walkway_threshold,
+		                      float divider_threshold);
 	
 
 	// 可视化

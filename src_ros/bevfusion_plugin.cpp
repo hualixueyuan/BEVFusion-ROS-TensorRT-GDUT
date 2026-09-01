@@ -1,5 +1,10 @@
 #include "bevfusion_plugin.hpp"
 
+#include <cuda_fp16.h>
+
+#include <array>
+#include <cmath>
+
 // 打印4*4的参数
 void printParam(float *parm, int const begin, int const end)
 {   
@@ -107,10 +112,12 @@ void free_images(std::vector<unsigned char*>& images)
   images.clear();
 }
 
-std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std::string& precision) 
+std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std::string& precision,
+                                            float det_confidence_threshold)
 {
 
   printf("Create by %s, %s\n", model.c_str(), precision.c_str());
+  const bool is_seg = model == "seg";
   bevfusion::camera::NormalizationParameter normalization;
   normalization.image_width = 1600;
   normalization.image_height = 900;
@@ -125,14 +132,17 @@ std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std
   normalization.method = bevfusion::camera::NormMethod::mean_std(mean, std, 1 / 255.0f, 0.0f);
 
   bevfusion::lidar::VoxelizationParameter voxelization;
-  voxelization.min_range = nvtype::Float3(-54.0f, -54.0f, -5.0);
-  voxelization.max_range = nvtype::Float3(+54.0f, +54.0f, +3.0);
-  voxelization.voxel_size = nvtype::Float3(0.075f, 0.075f, 0.2f);
+  voxelization.min_range = is_seg ? nvtype::Float3(-51.2f, -51.2f, -5.0f)
+                                   : nvtype::Float3(-54.0f, -54.0f, -5.0f);
+  voxelization.max_range = is_seg ? nvtype::Float3(+51.2f, +51.2f, +3.0f)
+                                   : nvtype::Float3(+54.0f, +54.0f, +3.0f);
+  voxelization.voxel_size = is_seg ? nvtype::Float3(0.1f, 0.1f, 0.2f)
+                                    : nvtype::Float3(0.075f, 0.075f, 0.2f);
   voxelization.grid_size =
       voxelization.compute_grid_size(voxelization.max_range, voxelization.min_range, voxelization.voxel_size);
   voxelization.max_points_per_voxel = 10;
   voxelization.max_points = 300000;
-  voxelization.max_voxels = 160000;
+  voxelization.max_voxels = is_seg ? 120000 : 160000;
   voxelization.num_feature = 5;
 
   bevfusion::lidar::SCNParameter scn;
@@ -150,8 +160,10 @@ std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std
   }
 
   bevfusion::camera::GeometryParameter geometry;
-  geometry.xbound = nvtype::Float3(-54.0f, 54.0f, 0.3f);
-  geometry.ybound = nvtype::Float3(-54.0f, 54.0f, 0.3f);
+  geometry.xbound = is_seg ? nvtype::Float3(-51.2f, 51.2f, 0.4f)
+                           : nvtype::Float3(-54.0f, 54.0f, 0.3f);
+  geometry.ybound = is_seg ? nvtype::Float3(-51.2f, 51.2f, 0.4f)
+                           : nvtype::Float3(-54.0f, 54.0f, 0.3f);
   geometry.zbound = nvtype::Float3(-10.0f, 10.0f, 20.0f);
   geometry.dbound = nvtype::Float3(1.0, 60.0f, 0.5f);
   geometry.image_width = 704;
@@ -159,7 +171,7 @@ std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std
   geometry.feat_width = 88;
   geometry.feat_height = 32;
   geometry.num_camera = 6;
-  geometry.geometry_dim = nvtype::Int3(360, 360, 80);
+  geometry.geometry_dim = is_seg ? nvtype::Int3(256, 256, 80) : nvtype::Int3(360, 360, 80);
 
   bevfusion::head::transbbox::TransBBoxParameter transbbox;
   transbbox.out_size_factor = 8;
@@ -168,8 +180,12 @@ std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std
   transbbox.post_center_range_end = {61.2, 61.2, 10.0};
   transbbox.voxel_size = {0.075, 0.075};
   transbbox.model = pkg_path + nv::format("/model/%s/build/head.bbox.plan", model.c_str());
-  transbbox.confidence_threshold = 0.12f;
+  transbbox.confidence_threshold = det_confidence_threshold;
   transbbox.sorted_bboxes = true;
+
+  bevfusion::head::map::MapHeadParameter maphead;
+  maphead.model = pkg_path + nv::format("/model/%s/build/head.map.plan", model.c_str());
+  maphead.enabled = is_seg;
 
   bevfusion::CoreParameter param;
   param.camera_model = pkg_path + nv::format("/model/%s/build/camera.backbone.plan", model.c_str());
@@ -178,18 +194,25 @@ std::shared_ptr<bevfusion::Core> create_core(const std::string& model, const std
   param.geometry = geometry;
   param.transfusion = pkg_path + nv::format("/model/%s/build/fuser.plan", model.c_str());
   param.transbbox = transbbox;
+  param.maphead = maphead;
+  param.enable_bbox = !is_seg;
   param.camera_vtransform = pkg_path + nv::format("/model/%s/build/camera.vtransform.plan", model.c_str());
   return bevfusion::create_core(param);
 }
 
 
-BEVFusionNode::BEVFusionNode(const std::string& model_name, const std::string& precision)
-  : model_name_(model_name), precision_(precision)
+BEVFusionNode::BEVFusionNode(const std::string& model_name, const std::string& precision,
+                             float det_confidence_threshold,
+                             const std::array<float, 6>& seg_thresholds,
+                             const std::string& calib_config_path)
+  : model_name_(model_name), precision_(precision),
+    config_path(calib_config_path.empty() ? pkg_path + "/configs" : calib_config_path),
+    seg_mode_(model_name == "seg"), seg_thresholds_(seg_thresholds)
 { 
-  config_path = pkg_path + "/configs";
+  printf("Calibration config path: %s\n", config_path.c_str());
 
   cloud_.reset(new pcl::PointCloud<PointT>());
-  core = create_core(model_name_, precision_);
+  core = create_core(model_name_, precision_, det_confidence_threshold);
 
   if (core == nullptr) 
   {
@@ -198,7 +221,7 @@ BEVFusionNode::BEVFusionNode(const std::string& model_name, const std::string& p
 
   cudaStreamCreate(&stream);
   core->print();
-  core->set_timer(true);
+  core->set_timer(false);
 
   camera2lidar = nv::Tensor::load(config_path + "/camera2lidar.tensor", false);
   camera_intrinsics = nv::Tensor::load(config_path + "/camera_intrinsics.tensor", false);
@@ -242,8 +265,84 @@ void BEVFusionNode::Inference(const std::vector<unsigned char *>& images_data, f
   // 推理
   auto bboxes =
     core->forward((const unsigned char**)images_data.data(), lidar_half.ptr<nvtype::half>(), lidar_data.size(0), stream);
-  
-  visualize(bboxes, lidar_half, images_data, lidar2image, "cuda-bevfusion.jpg", stream);
+
+  if (seg_mode_ && core->has_map()) {
+    auto map = core->last_map();
+    std::vector<half> map_host(map.numel());
+    checkRuntime(cudaMemcpyAsync(map_host.data(), map.data, map_host.size() * sizeof(half),
+                                 cudaMemcpyDeviceToHost, stream));
+    checkRuntime(cudaStreamSynchronize(stream));
+
+    static const std::array<cv::Vec3b, 6> colors = {{
+      cv::Vec3b(70, 180, 70),    // drivable area
+      cv::Vec3b(220, 60, 220),   // pedestrian crossing
+      cv::Vec3b(40, 150, 240),   // walkway
+      cv::Vec3b(245, 245, 245),  // stop line
+      cv::Vec3b(230, 120, 40),   // car park
+      cv::Vec3b(60, 60, 230),    // divider / lane line
+    }};
+    static const std::array<const char*, 6> class_names = {{
+      "drivable", "ped crossing", "walkway", "stop line", "car park", "divider"
+    }};
+    const int area = map.height * map.width;
+    cv::Mat raw(map.height, map.width, CV_8UC3, cv::Scalar(24, 24, 24));
+    for (int ix = 0; ix < map.height; ++ix) {
+      for (int iy = 0; iy < map.width; ++iy) {
+        const int offset = ix * map.width + iy;
+        int visible_class = -1;
+        for (int c = 0; c < std::min(map.classes, 6); ++c) {
+          const float logit = __half2float(map_host[c * area + offset]);
+          const float probability = 1.0f / (1.0f + std::exp(-logit));
+          // Map classes are multi-label. Later line-like classes intentionally
+          // overlay broad area classes so lane dividers and stop lines remain visible.
+          if (probability >= seg_thresholds_[c]) visible_class = c;
+        }
+        if (visible_class >= 0)
+          raw.at<cv::Vec3b>(map.height - 1 - ix, map.width - 1 - iy) = colors[visible_class];
+      }
+    }
+
+    cv::Mat bev;
+    cv::resize(raw, bev, cv::Size(600, 600), 0, 0, cv::INTER_NEAREST);
+    last_seg_image_ = cv::Mat(600, 840, CV_8UC3, cv::Scalar(18, 18, 18));
+    bev.copyTo(last_seg_image_(cv::Rect(0, 0, 600, 600)));
+    cv::circle(last_seg_image_, cv::Point(300, 300), 7, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
+    cv::arrowedLine(last_seg_image_, cv::Point(300, 300), cv::Point(300, 235),
+                    cv::Scalar(255, 220, 100), 3, cv::LINE_AA, 0, 0.2);
+    cv::putText(last_seg_image_, "front", cv::Point(310, 245), cv::FONT_HERSHEY_SIMPLEX,
+                0.55, cv::Scalar(255, 220, 100), 1, cv::LINE_AA);
+    cv::putText(last_seg_image_, "BEV map segmentation", cv::Point(620, 42),
+                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(245, 245, 245), 1, cv::LINE_AA);
+    for (int c = 0; c < 6; ++c) {
+      const int y = 82 + c * 42;
+      cv::rectangle(last_seg_image_, cv::Rect(620, y - 15, 24, 24),
+                    cv::Scalar(colors[c][0], colors[c][1], colors[c][2]), -1);
+      const std::string label = cv::format("%s  %.2f", class_names[c], seg_thresholds_[c]);
+      cv::putText(last_seg_image_, label, cv::Point(655, y + 3),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(225, 225, 225), 1, cv::LINE_AA);
+    }
+    cv::putText(last_seg_image_, "range: 100m x 100m", cv::Point(620, 370),
+                cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
+    cv::putText(last_seg_image_, "resolution: 0.5m", cv::Point(620, 398),
+                cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(190, 190, 190), 1, cv::LINE_AA);
+  } else {
+    visualize(bboxes, lidar_half, images_data, lidar2image, "cuda-bevfusion.jpg", stream);
+  }
+}
+
+bool BEVFusionNode::getLastSegImage(cv::Mat& image) const
+{
+  if (last_seg_image_.empty()) return false;
+  image = last_seg_image_;
+  return true;
+}
+
+void BEVFusionNode::setSegThresholds(float drivable_threshold, float walkway_threshold,
+                                     float divider_threshold)
+{
+  seg_thresholds_[0] = std::max(0.0f, std::min(1.0f, drivable_threshold));
+  seg_thresholds_[2] = std::max(0.0f, std::min(1.0f, walkway_threshold));
+  seg_thresholds_[5] = std::max(0.0f, std::min(1.0f, divider_threshold));
 }
 
 void BEVFusionNode::visualize(const std::vector<bevfusion::head::transbbox::BoundingBox>& bboxes, const nv::Tensor& lidar_points,
@@ -346,4 +445,3 @@ BEVFusionNode::~BEVFusionNode()
   free_images(images_data_);   // 释放内存
   checkRuntime(cudaStreamDestroy(stream));
 }
-

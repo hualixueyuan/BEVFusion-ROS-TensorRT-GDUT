@@ -23,7 +23,9 @@
 
 #include "lidar-scn.hpp"
 
+#include "onnx-parser.hpp"
 #include <spconv/engine.hpp>
+#include <spconv/tensor.hpp>
 
 namespace bevfusion {
 namespace lidar {
@@ -35,28 +37,38 @@ class SCNImplement : public SCN {
     voxelization_ = create_voxelization(param_.voxelization);
     if (voxelization_ == nullptr) return false;
 
-    native_scn_ = spconv::load_engine_from_onnx(param_.model, static_cast<spconv::Precision>(param_.precision));
+    native_scn_ = spconv::load_engine_from_onnx(
+        param_.model,
+        static_cast<spconv::Precision>(param_.precision),
+        false,
+        false);
     return native_scn_ != nullptr;
   }
 
   virtual const nvtype::half* forward(const nvtype::half* points, unsigned int num_points, void* stream) override {
     voxelization_->forward(points, num_points, stream, param_.order);
-    native_scn_output_ = native_scn_->forward(
-        std::vector<int64_t>{voxelization_->num_voxels(), voxelization_->voxel_dim()}, spconv::DType::Float16,
-        (void*)voxelization_->features(), std::vector<int64_t>{voxelization_->num_voxels(), voxelization_->indices_dim()},
-        spconv::DType::Int32, (void*)voxelization_->indices(), 1, voxelization_->grid_size(), stream);
-    return native_scn_output_ == nullptr ? nullptr : (nvtype::half*)native_scn_output_->features_data();
+    auto input = native_scn_->input(0);
+    input->features().reference((void*)voxelization_->features(),
+                                std::vector<int64_t>{voxelization_->num_voxels(), voxelization_->voxel_dim()},
+                                spconv::DataType::Float16, true);
+    input->indices().reference((void*)voxelization_->indices(),
+                               std::vector<int64_t>{voxelization_->num_voxels(), voxelization_->indices_dim()},
+                               spconv::DataType::Int32, true);
+    input->set_grid_size(voxelization_->grid_size());
+    native_scn_->forward(stream);
+    native_scn_output_ = native_scn_->output(0);
+    return native_scn_output_ == nullptr ? nullptr : (nvtype::half*)native_scn_output_->features().ptr();
   }
 
   virtual std::vector<int64_t> shape() override {
-    return native_scn_output_ == nullptr ? std::vector<int64_t>() : native_scn_output_->features_shape();
+    return native_scn_output_ == nullptr ? std::vector<int64_t>() : native_scn_output_->features().shape;
   }
 
  private:
   SCNParameter param_;
   std::shared_ptr<Voxelization> voxelization_;
   std::shared_ptr<spconv::Engine> native_scn_;
-  spconv::DTensor* native_scn_output_ = nullptr;
+  spconv::SparseDTensor* native_scn_output_ = nullptr;
 };
 
 std::shared_ptr<SCN> create_scn(const SCNParameter& param) {

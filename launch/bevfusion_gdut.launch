@@ -1,0 +1,96 @@
+<launch>
+    <!-- GDUT-only launch. The nuScenes launch and its topic mapping are untouched. -->
+    <arg name="enable_det" default="true" />
+    <arg name="enable_seg" default="true" />
+    <arg name="use_rviz" default="true" />
+    <arg name="use_seg_tuner" default="true" />
+    <arg name="det_precision" default="fp16" />
+    <arg name="seg_precision" default="fp16" />
+    <arg name="calib_config_path" default="$(find bevfusion)/configs/gdut" />
+
+    <arg name="det_threshold" default="0.3" />
+    <arg name="seg_drivable_threshold" default="0.65" />
+    <arg name="seg_ped_crossing_threshold" default="1" />
+    <arg name="seg_walkway_threshold" default="1" />
+    <arg name="seg_stop_line_threshold" default="1" />
+    <arg name="seg_carpark_threshold" default="1" />
+    <arg name="seg_divider_threshold" default="0.55" />
+
+    <!-- Topics verified from /home/p/4t/ros_bags/gdut_rosbag/gdut.bag. -->
+    <arg name="topic_cloud" default="/velodyne_points" />
+    <arg name="topic_img_f" default="/cam_front/image_raw" />
+    <arg name="topic_img_fl" default="/cam_front_left/image_raw" />
+    <arg name="topic_img_fr" default="/cam_front_right/image_raw" />
+    <arg name="topic_img_bl" default="/cam_back_left/image_raw" />
+    <arg name="topic_img_br" default="/cam_back_right/image_raw" />
+
+    <!-- Generate transparent BGRA frames using FRONT's timestamps. The existing
+         callback converts BGRA to BGR, so TensorRT receives a black CAM_BACK. -->
+    <arg name="blank_back_topic" default="/bevfusion_gdut/cam_back/image_raw" />
+    <node pkg="bevfusion" name="bevfusion_gdut_blank_back" type="gdut_blank_camera.py"
+          output="screen" required="true">
+        <param name="source_topic" type="string" value="$(arg topic_img_f)" />
+        <param name="output_topic" type="string" value="$(arg blank_back_topic)" />
+        <param name="frame_id" type="string" value="cam_back_optical_frame" />
+        <param name="encoding" type="string" value="bgra8" />
+    </node>
+
+    <!-- Load the imported five-camera calibration from an isolated GDUT directory.
+         The default configs/*.tensor used by nuScenes remain untouched. -->
+    <node if="$(arg enable_det)" pkg="bevfusion" name="bevfusion_gdut_det_node"
+          type="bevfusion_node" output="screen">
+        <param name="model_name" type="string" value="det" />
+        <param name="precision" type="string" value="$(arg det_precision)" />
+        <param name="det_confidence_threshold" type="double" value="$(arg det_threshold)" />
+        <param name="output_topic" type="string" value="/bevfusion_gdut/det_image" />
+        <param name="calib_config_path" type="string" value="$(arg calib_config_path)" />
+
+        <param name="topic_cloud" type="string" value="$(arg topic_cloud)" />
+        <param name="topic_img_f" type="string" value="$(arg topic_img_f)" />
+        <param name="topic_img_fl" type="string" value="$(arg topic_img_fl)" />
+        <param name="topic_img_fr" type="string" value="$(arg topic_img_fr)" />
+        <param name="topic_img_b" type="string" value="$(arg blank_back_topic)" />
+        <param name="topic_img_bl" type="string" value="$(arg topic_img_bl)" />
+        <param name="topic_img_br" type="string" value="$(arg topic_img_br)" />
+    </node>
+
+    <node if="$(arg enable_seg)" pkg="bevfusion" name="bevfusion_gdut_seg_node"
+          type="bevfusion_node" output="screen">
+        <param name="model_name" type="string" value="seg" />
+        <param name="precision" type="string" value="$(arg seg_precision)" />
+        <param name="output_topic" type="string" value="/bevfusion_gdut/seg_image" />
+        <param name="calib_config_path" type="string" value="$(arg calib_config_path)" />
+        <param name="enable_seg_dynamic_reconfigure" type="bool" value="$(arg use_seg_tuner)" />
+
+        <param name="seg_drivable_threshold" type="double" value="$(arg seg_drivable_threshold)" />
+        <param name="seg_ped_crossing_threshold" type="double" value="$(arg seg_ped_crossing_threshold)" />
+        <param name="seg_walkway_threshold" type="double" value="$(arg seg_walkway_threshold)" />
+        <param name="seg_stop_line_threshold" type="double" value="$(arg seg_stop_line_threshold)" />
+        <param name="seg_carpark_threshold" type="double" value="$(arg seg_carpark_threshold)" />
+        <param name="seg_divider_threshold" type="double" value="$(arg seg_divider_threshold)" />
+
+        <param name="topic_cloud" type="string" value="$(arg topic_cloud)" />
+        <param name="topic_img_f" type="string" value="$(arg topic_img_f)" />
+        <param name="topic_img_fl" type="string" value="$(arg topic_img_fl)" />
+        <param name="topic_img_fr" type="string" value="$(arg topic_img_fr)" />
+        <param name="topic_img_b" type="string" value="$(arg blank_back_topic)" />
+        <param name="topic_img_bl" type="string" value="$(arg topic_img_bl)" />
+        <param name="topic_img_br" type="string" value="$(arg topic_img_br)" />
+    </node>
+
+    <!-- Force system Python so rqt still works after activating the TensorRT Conda env. -->
+    <group if="$(arg enable_seg)">
+        <node if="$(arg use_seg_tuner)"
+              pkg="rqt_reconfigure" type="rqt_reconfigure" name="gdut_seg_threshold_tuner"
+              launch-prefix="/usr/bin/python3" args="/bevfusion_gdut_seg_node"
+              output="screen" required="false" />
+    </group>
+
+    <!-- Reuse the proven two-panel RViz layout through local topic remaps only. -->
+    <node if="$(arg use_rviz)" pkg="rviz" name="rviz_bevfusion_gdut" type="rviz"
+          respawn="false" output="screen"
+          args="-d $(find bevfusion)/launch/bevfusion_nuscenes.rviz">
+        <remap from="/bevfusion/det_image" to="/bevfusion_gdut/det_image" />
+        <remap from="/bevfusion/seg_image" to="/bevfusion_gdut/seg_image" />
+    </node>
+</launch>

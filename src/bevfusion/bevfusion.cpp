@@ -63,10 +63,20 @@ class CoreImplement : public Core {
       return false;
     }
 
-    transbbox_ = head::transbbox::create_transbbox(param.transbbox);
-    if (transbbox_ == nullptr) {
-      printf("Failed to create head transbbox.\n");
-      return false;
+    if (param.enable_bbox) {
+      transbbox_ = head::transbbox::create_transbbox(param.transbbox);
+      if (transbbox_ == nullptr) {
+        printf("Failed to create head transbbox.\n");
+        return false;
+      }
+    }
+
+    if (param.maphead.enabled) {
+      maphead_ = head::map::create_maphead(param.maphead);
+      if (maphead_ == nullptr) {
+        printf("Failed to create map head.\n");
+        return false;
+      }
     }
 
     lidar_scn_ = lidar::create_scn(param.lidar_scn);
@@ -81,10 +91,12 @@ class CoreImplement : public Core {
       return false;
     }
 
-    camera_depth_ = camera::create_depth(param.normalize.output_width, param.normalize.output_height, param.normalize.num_camera);
-    if (camera_depth_ == nullptr) {
-      printf("Failed to create depth.\n");
-      return false;
+    if (camera_backbone_->needs_depth()) {
+      camera_depth_ = camera::create_depth(param.normalize.output_width, param.normalize.output_height, param.normalize.num_camera);
+      if (camera_depth_ == nullptr) {
+        printf("Failed to create depth.\n");
+        return false;
+      }
     }
 
     camera_geometry_ = camera::create_geometry(param.geometry);
@@ -120,7 +132,9 @@ class CoreImplement : public Core {
     if (do_normalization) {
       normed_images = (nvtype::half*)this->normalizer_->forward((const unsigned char**)(camera_images), stream);
     }
-    const nvtype::half* depth = this->camera_depth_->forward(lidar_points_device_, num_points, 5, stream);
+    const nvtype::half* depth = nullptr;
+    if (this->camera_depth_ != nullptr)
+      depth = this->camera_depth_->forward(lidar_points_device_, num_points, 5, stream);
 
     this->camera_backbone_->forward(normed_images, depth, stream);
     const nvtype::half* camera_bev = this->camera_bevpool_->forward(
@@ -129,6 +143,9 @@ class CoreImplement : public Core {
 
     const nvtype::half* camera_bevfeat = camera_vtransform_->forward(camera_bev, stream);
     const nvtype::half* fusion_feature = this->transfusion_->forward(camera_bevfeat, lidar_feature, stream);
+    if (maphead_ != nullptr) last_map_ = maphead_->forward(fusion_feature, stream);
+    else last_map_ = head::map::MapView();
+    if (transbbox_ == nullptr) return {};
     return this->transbbox_->forward(fusion_feature, param_.transbbox.confidence_threshold, stream,
                                      param_.transbbox.sorted_bboxes);
   }
@@ -169,9 +186,12 @@ class CoreImplement : public Core {
     const nvtype::half* lidar_feature = this->lidar_scn_->forward(lidar_points_device_, num_points, stream);
     times.emplace_back(timer_.stop("Lidar Backbone"));
 
-    timer_.start(_stream);
-    const nvtype::half* depth = this->camera_depth_->forward(lidar_points_device_, num_points, 5, stream);
-    times.emplace_back(timer_.stop("Camera Depth"));
+    const nvtype::half* depth = nullptr;
+    if (this->camera_depth_ != nullptr) {
+      timer_.start(_stream);
+      depth = this->camera_depth_->forward(lidar_points_device_, num_points, 5, stream);
+      times.emplace_back(timer_.stop("Camera Depth"));
+    }
  
     timer_.start(_stream);
     this->camera_backbone_->forward(normed_images, depth, stream);
@@ -191,10 +211,21 @@ class CoreImplement : public Core {
     const nvtype::half* fusion_feature = this->transfusion_->forward(camera_bevfeat, lidar_feature, stream);
     times.emplace_back(timer_.stop("Transfusion"));
 
-    timer_.start(_stream);
-    auto output =
-        this->transbbox_->forward(fusion_feature, param_.transbbox.confidence_threshold, stream, param_.transbbox.sorted_bboxes);
-    times.emplace_back(timer_.stop("Head BoundingBox"));
+    if (maphead_ != nullptr) {
+      timer_.start(_stream);
+      last_map_ = maphead_->forward(fusion_feature, stream);
+      times.emplace_back(timer_.stop("Head Map"));
+    } else {
+      last_map_ = head::map::MapView();
+    }
+
+    std::vector<head::transbbox::BoundingBox> output;
+    if (transbbox_ != nullptr) {
+      timer_.start(_stream);
+      output = this->transbbox_->forward(fusion_feature, param_.transbbox.confidence_threshold, stream,
+                                         param_.transbbox.sorted_bboxes);
+      times.emplace_back(timer_.stop("Head BoundingBox"));
+    }
 
     float total_time = std::accumulate(times.begin(), times.end(), 0.0f, std::plus<float>{});
     printf("Total: %.3f ms\n", total_time);
@@ -223,16 +254,20 @@ class CoreImplement : public Core {
 
   virtual void set_timer(bool enable) override { enable_timer_ = enable; }
 
+  virtual bool has_map() const override { return last_map_.valid(); }
+  virtual head::map::MapView last_map() const override { return last_map_; }
+
   virtual void print() override {
     camera_backbone_->print();
     camera_vtransform_->print();
     transfusion_->print();
-    transbbox_->print();
+    if (transbbox_ != nullptr) transbbox_->print();
+    if (maphead_ != nullptr) maphead_->print();
   }
 
   virtual void update(const float* camera2lidar, const float* camera_intrinsics, const float* lidar2image,
                       const float* img_aug_matrix, void* stream) override {
-    camera_depth_->update(img_aug_matrix, lidar2image, stream);
+    if (camera_depth_ != nullptr) camera_depth_->update(img_aug_matrix, lidar2image, stream);
     camera_geometry_->update(camera2lidar, camera_intrinsics, img_aug_matrix, stream);
   }
 
@@ -255,6 +290,8 @@ class CoreImplement : public Core {
   std::shared_ptr<lidar::SCN> lidar_scn_;
   std::shared_ptr<fuser::Transfusion> transfusion_;
   std::shared_ptr<head::transbbox::TransBBox> transbbox_;
+  std::shared_ptr<head::map::MapHead> maphead_;
+  head::map::MapView last_map_;
   float confidence_threshold_ = 0;
   bool enable_timer_ = false;
 };

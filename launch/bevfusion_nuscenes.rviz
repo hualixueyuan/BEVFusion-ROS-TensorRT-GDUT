@@ -1,0 +1,117 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Detection1
+        - /Segmentation1
+      Splitter Ratio: 0.5
+    Tree Height: 371
+  - Class: rviz/Selection
+    Name: Selection
+  - Class: rviz/Tool Properties
+    Expanded: ~
+    Name: Tool Properties
+    Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz/Time
+    Name: Time
+    SyncMode: 0
+    SyncSource: Detection
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 1
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /bevfusion/det_image
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Detection
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Unreliable: false
+      Value: true
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /bevfusion/seg_image
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Segmentation
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Unreliable: false
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: lidar_top
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 10
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Field of View: 0.7853981852531433
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.785398006439209
+      Target Frame: <Fixed Frame>
+      Yaw: 0.785398006439209
+    Saved: ~
+Window Geometry:
+  Detection:
+    collapsed: false
+  Displays:
+    collapsed: false
+  Height: 1016
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd00000002000000000000038d0000039efc0200000006fb000000120044006500740065006300740069006f006e010000003d0000039e0000001600fffffffb000000100044006900730070006c00610079007300000000f1000000c9000000c900fffffffb0000001200530065006c0065006300740069006f006e000000012e0000007d0000005c00fffffffb0000001e0054006f006f006c002000500072006f0070006500720074006900650073000000015c000000960000005c00fffffffb0000000a00560069006500770073000000019f0000014d000000a400fffffffb0000000800540069006d0065000000029c000000cb0000003900ffffff000000010000038b0000039efc0200000001fb00000018005300650067006d0065006e0074006100740069006f006e010000003d0000039e0000001600ffffff000000200000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Segmentation:
+    collapsed: false
+  Selection:
+    collapsed: false
+  Time:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1860
+  X: 60
+  Y: 27

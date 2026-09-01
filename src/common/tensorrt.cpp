@@ -119,7 +119,11 @@ class __native_engine_context {
       return false;
     }
 
+#if NV_TENSORRT_MAJOR >= 10
+    engine_ = std::shared_ptr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(pdata, size),
+#else
     engine_ = std::shared_ptr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(pdata, size, nullptr),
+#endif
                                                      destroy_pointer<nvinfer1::ICudaEngine>);
     if (engine_ == nullptr) {
       printf("Failed to deserialize engine: %s\n", message_name);
@@ -176,11 +180,19 @@ class EngineImplement : public Engine {
 
   void setup() {
     auto engine = this->context_->engine_;
+#if NV_TENSORRT_MAJOR >= 10
+    int nbBindings = engine->getNbIOTensors();
+#else
     int nbBindings = engine->getNbBindings();
+#endif
 
     binding_name_to_index_.clear();
     for (int i = 0; i < nbBindings; ++i) {
+#if NV_TENSORRT_MAJOR >= 10
+      const char *bindingName = engine->getIOTensorName(i);
+#else
       const char *bindingName = engine->getBindingName(i);
+#endif
       binding_name_to_index_[bindingName] = i;
     }
   }
@@ -192,26 +204,58 @@ class EngineImplement : public Engine {
   }
 
   virtual bool forward(const std::vector<const void *> &bindings, void *stream, void *input_consum_event) override {
+#if NV_TENSORRT_MAJOR >= 10
+    auto engine = this->context_->engine_;
+    auto context = this->context_->context_;
+    if (bindings.size() != static_cast<size_t>(engine->getNbIOTensors())) return false;
+    for (size_t i = 0; i < bindings.size(); ++i) {
+      if (!context->setTensorAddress(engine->getIOTensorName(i), const_cast<void *>(bindings[i]))) return false;
+    }
+    if (input_consum_event && !context->setInputConsumedEvent(*static_cast<cudaEvent_t *>(input_consum_event))) return false;
+    return context->enqueueV3(static_cast<cudaStream_t>(stream));
+#else
     return this->context_->context_->enqueueV2((void **)bindings.data(), (cudaStream_t)stream, (cudaEvent_t *)input_consum_event);
+#endif
   }
 
   virtual std::vector<int> run_dims(const std::string &name) override { return run_dims(index(name)); }
 
   virtual std::vector<int> run_dims(int ibinding) override {
+#if NV_TENSORRT_MAJOR >= 10
+    auto dim = this->context_->context_->getTensorShape(this->context_->engine_->getIOTensorName(ibinding));
+#else
     auto dim = this->context_->context_->getBindingDimensions(ibinding);
+#endif
     return std::vector<int>(dim.d, dim.d + dim.nbDims);
   }
 
   virtual std::vector<int> static_dims(const std::string &name) override { return static_dims(index(name)); }
 
   virtual std::vector<int> static_dims(int ibinding) override {
+#if NV_TENSORRT_MAJOR >= 10
+    auto dim = this->context_->engine_->getTensorShape(this->context_->engine_->getIOTensorName(ibinding));
+#else
     auto dim = this->context_->engine_->getBindingDimensions(ibinding);
+#endif
     return std::vector<int>(dim.d, dim.d + dim.nbDims);
   }
 
-  virtual int num_bindings() override { return this->context_->engine_->getNbBindings(); }
+  virtual int num_bindings() override {
+#if NV_TENSORRT_MAJOR >= 10
+    return this->context_->engine_->getNbIOTensors();
+#else
+    return this->context_->engine_->getNbBindings();
+#endif
+  }
 
-  virtual bool is_input(int ibinding) override { return this->context_->engine_->bindingIsInput(ibinding); }
+  virtual bool is_input(int ibinding) override {
+#if NV_TENSORRT_MAJOR >= 10
+    return this->context_->engine_->getTensorIOMode(this->context_->engine_->getIOTensorName(ibinding)) ==
+           nvinfer1::TensorIOMode::kINPUT;
+#else
+    return this->context_->engine_->bindingIsInput(ibinding);
+#endif
+  }
 
   virtual bool set_run_dims(const std::string &name, const std::vector<int> &dims) override {
     return this->set_run_dims(index(name), dims);
@@ -221,26 +265,44 @@ class EngineImplement : public Engine {
     nvinfer1::Dims d;
     memcpy(d.d, dims.data(), sizeof(int) * dims.size());
     d.nbDims = dims.size();
+#if NV_TENSORRT_MAJOR >= 10
+    return this->context_->context_->setInputShape(this->context_->engine_->getIOTensorName(ibinding), d);
+#else
     return this->context_->context_->setBindingDimensions(ibinding, d);
+#endif
   }
 
   virtual int numel(const std::string &name) override { return numel(index(name)); }
 
   virtual int numel(int ibinding) override {
+#if NV_TENSORRT_MAJOR >= 10
+    auto dim = this->context_->context_->getTensorShape(this->context_->engine_->getIOTensorName(ibinding));
+#else
     auto dim = this->context_->context_->getBindingDimensions(ibinding);
+#endif
     return std::accumulate(dim.d, dim.d + dim.nbDims, 1, std::multiplies<int>());
   }
 
   virtual DType dtype(const std::string &name) override { return dtype(index(name)); }
 
-  virtual DType dtype(int ibinding) override { return (DType)this->context_->engine_->getBindingDataType(ibinding); }
+  virtual DType dtype(int ibinding) override {
+#if NV_TENSORRT_MAJOR >= 10
+    return static_cast<DType>(this->context_->engine_->getTensorDataType(this->context_->engine_->getIOTensorName(ibinding)));
+#else
+    return static_cast<DType>(this->context_->engine_->getBindingDataType(ibinding));
+#endif
+  }
 
   virtual bool has_dynamic_dim() override {
     // check if any input or output bindings have dynamic shapes
     // code from ChatGPT
-    int numBindings = this->context_->engine_->getNbBindings();
+    int numBindings = num_bindings();
     for (int i = 0; i < numBindings; ++i) {
+#if NV_TENSORRT_MAJOR >= 10
+      nvinfer1::Dims dims = this->context_->engine_->getTensorShape(this->context_->engine_->getIOTensorName(i));
+#else
       nvinfer1::Dims dims = this->context_->engine_->getBindingDimensions(i);
+#endif
       for (int j = 0; j < dims.nbDims; ++j) {
         if (dims.d[j] == -1) return true;
       }
@@ -255,27 +317,26 @@ class EngineImplement : public Engine {
     int num_input = 0;
     int num_output = 0;
     auto engine = this->context_->engine_;
-    for (int i = 0; i < engine->getNbBindings(); ++i) {
-      if (engine->bindingIsInput(i))
+    for (int i = 0; i < num_bindings(); ++i) {
+      if (is_input(i))
         num_input++;
       else
         num_output++;
     }
 
-    printf("Inputs: %d\n", num_input);
-    for (int i = 0; i < num_input; ++i) {
-      auto name = engine->getBindingName(i);
+    printf("Inputs: %d, Outputs: %d\n", num_input, num_output);
+    for (int i = 0; i < num_bindings(); ++i) {
+#if NV_TENSORRT_MAJOR >= 10
+      auto tensor_name = engine->getIOTensorName(i);
+      auto dim = engine->getTensorShape(tensor_name);
+      auto tensor_dtype = engine->getTensorDataType(tensor_name);
+#else
+      auto tensor_name = engine->getBindingName(i);
       auto dim = engine->getBindingDimensions(i);
-      auto dtype = engine->getBindingDataType(i);
-      printf("\t%d.%s : {%s} [%s]\n", i, name, format_shape(dim).c_str(), data_type_string(dtype));
-    }
-
-    printf("Outputs: %d\n", num_output);
-    for (int i = 0; i < num_output; ++i) {
-      auto name = engine->getBindingName(i + num_input);
-      auto dim = engine->getBindingDimensions(i + num_input);
-      auto dtype = engine->getBindingDataType(i + num_input);
-      printf("\t%d.%s : {%s} [%s]\n", i, name, format_shape(dim).c_str(), data_type_string(dtype));
+      auto tensor_dtype = engine->getBindingDataType(i);
+#endif
+      printf("\t%s %d.%s : {%s} [%s]\n", is_input(i) ? "Input" : "Output", i, tensor_name,
+             format_shape(dim).c_str(), data_type_string(tensor_dtype));
     }
     printf("------------------------------------------------------\n");
   }

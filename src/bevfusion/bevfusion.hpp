@@ -30,6 +30,7 @@
 #include "camera-geometry.hpp"
 #include "camera-normalization.hpp"
 #include "camera-vtransform.hpp"
+#include "head-map.hpp"
 #include "head-transbbox.hpp"
 #include "lidar-scn.hpp"
 #include "transfusion.hpp"
@@ -44,6 +45,8 @@ struct CoreParameter {
   lidar::SCNParameter lidar_scn;
   std::string transfusion;
   head::transbbox::TransBBoxParameter transbbox;
+  head::map::MapHeadParameter maphead;
+  bool enable_bbox = true;
 };
 
 class Core {
@@ -57,6 +60,9 @@ class Core {
 
   virtual void print() = 0;
   virtual void set_timer(bool enable) = 0;
+
+  virtual bool has_map() const = 0;
+  virtual head::map::MapView last_map() const = 0;
 
   virtual void update(const float *camera2lidar, const float *camera_intrinsics, const float *lidar2image,
                       const float *img_aug_matrix, void *stream = nullptr) = 0;

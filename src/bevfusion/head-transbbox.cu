@@ -126,11 +126,12 @@ class TransBBoxImplement : public TransBBox {
   }
 
   void create_binding_memory() {
-    for (int ibinding = 0; ibinding < engine_->num_bindings(); ++ibinding) {
-      if (engine_->is_input(ibinding)) continue;
-
-      auto shape = engine_->static_dims(ibinding);
-      Asserts(engine_->dtype(ibinding) == TensorRT::DType::HALF, "Invalid binding data type.");
+    // Keep buffers in the semantic order expected by decode_kernel.  TensorRT
+    // 10 does not guarantee the same I/O enumeration order as older engines.
+    const char* output_names[] = {"reg", "height", "dim", "rot", "vel", "score"};
+    for (const char* name : output_names) {
+      auto shape = engine_->static_dims(name);
+      Asserts(engine_->dtype(name) == TensorRT::DType::HALF, "Invalid binding data type.");
 
       size_t volumn = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
       half* pdata = nullptr;
@@ -147,9 +148,12 @@ class TransBBoxImplement : public TransBBox {
   virtual std::vector<BoundingBox> forward(const nvtype::half* transfusion_feature, float confidence_threshold, void* stream,
                                            bool sorted) override {
     cudaStream_t _stream = static_cast<cudaStream_t>(stream);
-    engine_->forward({/* input  */ transfusion_feature,
-                      /* output */ bindings_[0], bindings_[1], bindings_[2], bindings_[3], bindings_[4], bindings_[5]},
-                     _stream);
+    std::vector<const void*> engine_bindings(engine_->num_bindings(), nullptr);
+    engine_bindings[engine_->index("middle")] = transfusion_feature;
+    const char* output_names[] = {"reg", "height", "dim", "rot", "vel", "score"};
+    for (size_t i = 0; i < bindings_.size(); ++i)
+      engine_bindings[engine_->index(output_names[i])] = bindings_[i];
+    Asserts(engine_->forward(engine_bindings, _stream), "Failed to execute bbox TensorRT engine.");
     checkRuntime(cudaMemsetAsync(output_device_size_, 0, sizeof(unsigned int), _stream));
 
     cuda_linear_launch(decode_kernel, _stream, bindshape_[0][2], bindings_[0], bindings_[1], bindings_[2], bindings_[3],

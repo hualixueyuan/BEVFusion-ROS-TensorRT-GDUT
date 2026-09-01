@@ -24,6 +24,7 @@
 #include <cuda_fp16.h>
 
 #include <numeric>
+#include <vector>
 
 #include "camera-backbone.hpp"
 #include "common/check.hpp"
@@ -44,8 +45,15 @@ class BackboneImplement : public Backbone {
     engine_ = TensorRT::load(model);
     if (engine_ == nullptr) return false;
 
-    depth_dims_ = engine_->static_dims(2);
-    feature_dims_ = engine_->static_dims(3);
+    int input_count = 0;
+    for (int i = 0; i < engine_->num_bindings(); ++i)
+      if (engine_->is_input(i)) ++input_count;
+    needs_depth_ = input_count == 2;
+
+    depth_binding_ = engine_->index("camera_depth_weights");
+    feature_binding_ = engine_->index("camera_feature");
+    depth_dims_ = engine_->static_dims(depth_binding_);
+    feature_dims_ = engine_->static_dims(feature_binding_);
     int32_t volumn = std::accumulate(depth_dims_.begin(), depth_dims_.end(), 1, std::multiplies<int32_t>());
     checkRuntime(cudaMalloc(&depth_weights_, volumn * sizeof(nvtype::half)));
 
@@ -60,9 +68,15 @@ class BackboneImplement : public Backbone {
   virtual void print() override { engine_->print("Camerea Backbone"); }
 
   virtual void forward(const nvtype::half* images, const nvtype::half* depth, void* stream = nullptr) override {
-    engine_->forward({images, depth, depth_weights_, feature_}, static_cast<cudaStream_t>(stream));
+    std::vector<const void*> bindings(engine_->num_bindings(), nullptr);
+    bindings[engine_->index("img")] = images;
+    if (needs_depth_) bindings[engine_->index("depth")] = depth;
+    bindings[depth_binding_] = depth_weights_;
+    bindings[feature_binding_] = feature_;
+    Asserts(engine_->forward(bindings, stream), "Failed to execute camera-backbone TensorRT engine.");
   }
 
+  virtual bool needs_depth() const override { return needs_depth_; }
   virtual nvtype::half* depth() override { return depth_weights_; }
   virtual nvtype::half* feature() override { return feature_; }
   virtual std::vector<int> depth_shape() override { return depth_dims_; }
@@ -74,6 +88,9 @@ class BackboneImplement : public Backbone {
   nvtype::half* feature_ = nullptr;
   nvtype::half* depth_weights_ = nullptr;
   std::vector<int> feature_dims_, depth_dims_, camera_shape_;
+  int depth_binding_ = -1;
+  int feature_binding_ = -1;
+  bool needs_depth_ = true;
 };
 
 std::shared_ptr<Backbone> create_backbone(const std::string& model) {

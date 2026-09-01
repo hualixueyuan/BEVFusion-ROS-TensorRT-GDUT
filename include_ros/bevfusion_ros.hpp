@@ -4,7 +4,10 @@
 
 #include "bevfusion_plugin.hpp"
 
+#include <bevfusion/GdutSegThresholdsConfig.h>
+#include <dynamic_reconfigure/server.h>
 #include <ros/ros.h>
+#include <array>
 // message_filters消息同步器
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
@@ -27,7 +30,15 @@ class RosNode
 { 
   std::string model_name_, precition_;
   ros::NodeHandle n_;
+  ros::NodeHandle private_n_;
   ros::Publisher pub_img_;
+  bool seg_mode_ = false;
+  bool enable_seg_dynamic_reconfigure_ = false;
+
+  float det_confidence_threshold_ = 0.12f;
+  std::array<float, 6> seg_thresholds_ = {{0.5f, 0.4f, 0.4f, 0.45f, 0.4f, 0.55f}};
+  std::string output_topic_;
+  std::string calib_config_path_;
 
   std::string topic_cloud_;
   std::string topic_img_f_, topic_img_fl_, topic_img_fr_;
@@ -51,12 +62,16 @@ class RosNode
 	std::shared_ptr<Sync> sync_;
 
   std::shared_ptr<BEVFusionNode> bevfusion_node_;
+  using SegThresholdServer = dynamic_reconfigure::Server<bevfusion::GdutSegThresholdsConfig>;
+  std::shared_ptr<SegThresholdServer> seg_threshold_server_;
 
   
  public:
   RosNode(const std::string model_name, const std::string  precision);
   ~RosNode(){};
-  void getTopicName();
+  void getParameters();
+  void segThresholdReconfigureCallback(bevfusion::GdutSegThresholdsConfig& config,
+                                       uint32_t level);
   void callback(const sensor_msgs::PointCloud2ConstPtr& msg_cloud, 
     const sensor_msgs::ImageConstPtr& msg_f_img,
     const sensor_msgs::ImageConstPtr& msg_fl_img,
